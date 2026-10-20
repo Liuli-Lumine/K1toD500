@@ -125,6 +125,68 @@ bool ParseStrictNum(const std::string& raw, double& out) {
     return true;
 }
 
+// 频率: 不管写了什么符号/单位, 只把数字挑出来; 前三位是 MHz 整数部分。
+//   438.500 / 438.5 / 4385 / 438.5MHz / 4385兆赫兹  ->  438.5 (MHz)
+//   145.6125 / 1456125                              ->  145.6125 (MHz)
+// 电台只用得到 100.000 ~ 999.999 MHz, 超出即判为不规范。
+// converted = 原文不是规规矩矩的十进制数字(或写出来的值跟换算结果不同), 需要提示用户。
+bool ParseFreqCell(const std::string& raw, double& mhz, bool& converted, std::string& why) {
+    converted = false;
+    std::string d;
+    for (char c : raw)
+        if (c >= '0' && c <= '9') d.push_back(c);
+    if (d.empty()) {
+        why = "里面没有数字";
+        return false;
+    }
+    if (d == "0") {  // 发送频率写 0 表示直频, 由调用方处理
+        mhz = 0.0;
+        return true;
+    }
+    if (d.size() < 3) {
+        why = "有效数字不足三位";
+        return false;
+    }
+    std::string fp = d.substr(3);
+    if (fp.size() > 5) fp.resize(5);  // 电台只存到 10 Hz
+    mhz = std::strtod((d.substr(0, 3) + "." + (fp.empty() ? "0" : fp)).c_str(), nullptr);
+    if (!(mhz >= 100.0 && mhz < 1000.0)) {
+        why = "超出 100~999.999 MHz";
+        return false;
+    }
+
+    // 判断原文是否已经是规范写法: 纯数字+最多一个小数点, 且数值就是换算结果
+    std::string s = TrimAscii(raw);
+    bool clean = !s.empty();
+    bool dot = false;
+    for (char c : s) {
+        if (c >= '0' && c <= '9') continue;
+        if (c == '.' && !dot) {
+            dot = true;
+            continue;
+        }
+        clean = false;
+        break;
+    }
+    converted = !clean || std::fabs(std::strtod(s.c_str(), nullptr) - mhz) > 5e-6;
+    return true;
+}
+
+// 亚音频率(Hz): 保留用户写的小数点, 其余符号(Hz、空格等)一律忽略
+bool ParseToneHz(const std::string& raw, double& hz) {
+    std::string t;
+    for (char c : raw) {
+        if (c >= '0' && c <= '9')
+            t.push_back(c);
+        else if (c == '.' && t.find('.') == std::string::npos)
+            t.push_back(c);
+    }
+    while (!t.empty() && t.back() == '.') t.pop_back();
+    if (t.empty()) return false;
+    hz = std::strtod(t.c_str(), nullptr);
+    return true;
+}
+
 // ---------------------------------------------------------------- 编码
 // 名称 -> GBK 定长(0xFF 填充), 超长在字符边界截断
 std::vector<uint8_t> EncName(const std::string& name, size_t nbytes, size_t& used) {
@@ -249,7 +311,8 @@ struct Plan {
 struct ReadOutcome {
     std::vector<Channel> chans;
     int skipped = 0;
-    std::vector<std::string> problems;  // 已排好序的日志行
+    std::vector<std::string> problems;   // 已排好序的日志行: 整条跳过
+    std::vector<std::string> freqNotes;  // 频率写法不规范但已换算
 };
 
 // 亚音输入 -> 编码决策 (优先级与 Python 版一致); 返回 false = 这一侧填得不完整
@@ -380,23 +443,37 @@ ReadOutcome ReadChannels(const Cells& cells, LogBuf& log) {
         else
             ch.no = (int)std::nearbyint(noV);
 
-        // 收发频率
+        // 收发频率: 把数字挑出来, 前三位当 MHz 整数部分
+        std::vector<std::string> notes;  // 写法不规范但能换算的, 只提示不跳过
+        std::string why;
+        bool conv = false;
         if (TrimAscii(rawRx).empty())
             bad.push_back("接收频率(没填)");
-        else if (!ParseStrictNum(rawRx, ch.rx))
-            bad.push_back("接收频率");
-        else if (!(ch.rx > 0.0 && ch.rx < 1000.0))
-            bad.push_back("接收频率(超出范围)");
+        else if (!ParseFreqCell(rawRx, ch.rx, conv, why))
+            bad.push_back("接收频率(" + why + ")");
+        else if (ch.rx == 0.0)
+            bad.push_back("接收频率(是 0)");
+        else if (conv)
+            notes.push_back(label + " 接收频率 “" + TrimAscii(rawRx) + "” 不规范，将转换为 " +
+                            FmtMhz(ch.rx));
 
         std::string rawTx = cells.Get(r, C_TX);
-        if (TrimAscii(rawTx).empty())
+        if (TrimAscii(rawTx).empty()) {
             ch.tx = ch.rx;  // 不填 = 直频
-        else if (!ParseStrictNum(rawTx, ch.tx))
-            bad.push_back("发送频率");
-        else if (ch.tx == 0.0)
-            ch.tx = ch.rx;  // 填 0 也按直频
-        else if (!(ch.tx > 0.0 && ch.tx < 1000.0))
-            bad.push_back("发送频率(超出范围)");
+        } else {
+            double txv = 0;
+            conv = false;
+            if (!ParseFreqCell(rawTx, txv, conv, why)) {
+                bad.push_back("发送频率(" + why + ")");
+            } else if (txv == 0.0) {
+                ch.tx = ch.rx;  // 填 0 也按直频
+            } else {
+                ch.tx = txv;
+                if (conv)
+                    notes.push_back(label + " 发送频率 “" + TrimAscii(rawTx) +
+                                    "” 不规范，将转换为 " + FmtMhz(ch.tx));
+            }
+        }
 
         // 亚音 (先只做语法检查, 语义在后面统一判)
         ch.rType = TrimAscii(cells.Get(r, C_RTYPE));
@@ -405,8 +482,8 @@ ReadOutcome ReadChannels(const Cells& cells, LogBuf& log) {
         ch.tCode = TrimAscii(cells.Get(r, C_TCODE));
         std::string rawRVal = cells.Get(r, C_RVAL);
         std::string rawTVal = cells.Get(r, C_TVAL);
-        ch.hasRVal = ParseStrictNum(rawRVal, ch.rVal);
-        ch.hasTVal = ParseStrictNum(rawTVal, ch.tVal);
+        ch.hasRVal = ParseToneHz(rawRVal, ch.rVal);
+        ch.hasTVal = ParseToneHz(rawTVal, ch.tVal);
         if (!ch.hasRVal && !TrimAscii(rawRVal).empty()) bad.push_back("接收亚音频率");
         if (!ch.hasTVal && !TrimAscii(rawTVal).empty()) bad.push_back("发送亚音频率");
         if (!ch.rCode.empty()) {
@@ -435,7 +512,6 @@ ReadOutcome ReadChannels(const Cells& cells, LogBuf& log) {
 
         // 语法都没问题, 再判亚音语义 (避免给被跳过的信道刷警告)
         if (bad.empty()) {
-            std::string why;
             if (!TonePlanFor(ch, false, ch.rTone, why, log)) bad.push_back(why);
             if (!TonePlanFor(ch, true, ch.tTone, why, log)) bad.push_back(why);
         }
@@ -450,6 +526,8 @@ ReadOutcome ReadChannels(const Cells& cells, LogBuf& log) {
             }
             continue;
         }
+        // 能转换, 只是频率写法不规范 -> 收下这条信道, 但把换算过程告诉用户
+        for (const auto& s : notes) st.freqNotes.push_back(s);
         st.chans.push_back(ch);
     }
     return st;
@@ -728,6 +806,15 @@ Result Convert(const uint8_t* baseBlob, size_t baseLen, const Options& opt) {
 
         ReadOutcome rd = ReadChannels(cells, log);
         const std::vector<Channel>& chans = rd.chans;
+        if (!rd.freqNotes.empty()) {
+            log.Line("");
+            log.Line("! 有 " + N((long long)rd.freqNotes.size()) +
+                     " 处频率写法不规范, 已按数字换算(照常转换):");
+            for (size_t i = 0; i < rd.freqNotes.size() && i < 30; ++i)
+                log.Line("   " + rd.freqNotes[i]);
+            if (rd.freqNotes.size() > 30)
+                log.Line("   … 另有 " + N((long long)rd.freqNotes.size() - 30) + " 处");
+        }
         if (rd.skipped > 0) {
             log.Line("");
             log.Line("! 有 " + N(rd.skipped) + " 条信道填得不规范, 已跳过(不进行转换):");
