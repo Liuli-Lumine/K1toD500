@@ -30,12 +30,12 @@ struct Result {
 Result Convert(const uint8_t* baseBlob, size_t baseLen, const Options& opt);
 
 struct BackupItem {
-    std::string date;  // 由修改时间推出来的 yy mm dd (永远非空)
+    std::string date;  // 文件名里的 6 位日期; 空 = K5Channel.xlsx (兜底)
     std::wstring path;
     unsigned long long mtime = 0;
 };
 
-std::vector<BackupItem> ListBackups(const std::wstring& dir);  // 按修改时间升序
+std::vector<BackupItem> ListBackups(const std::wstring& dir);  // 按 (日期, 修改时间) 升序
 
 bool PickBackup(const std::wstring& dir, const std::wstring& explicitPath, std::wstring& outPath,
                 std::string& yymmdd, std::string& how, std::string& err);

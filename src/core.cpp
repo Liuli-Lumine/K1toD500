@@ -656,15 +656,6 @@ bool BuildRows(const uint8_t* blob, size_t len, std::vector<Row>& rows, std::str
     return true;
 }
 
-// 取文件的修改时间 (FILETIME); 失败返回 false
-bool FileMtime(const std::wstring& path, unsigned long long& ft) {
-    WIN32_FILE_ATTRIBUTE_DATA fad;
-    if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &fad)) return false;
-    ft = ((unsigned long long)fad.ftLastWriteTime.dwHighDateTime << 32) |
-         (unsigned long long)fad.ftLastWriteTime.dwLowDateTime;
-    return true;
-}
-
 std::string HeaderCheckError(const Cells& cells) {
     std::string bad;
     for (const auto& rule : HEADER_RULES) {
@@ -692,7 +683,33 @@ std::string HeaderCheckError(const Cells& cells) {
 }  // namespace
 
 // ---------------------------------------------------------------- 备份选择
-// 一律按文件修改时间排序, 不再猜文件名里的日期
+// 只认两种名字:
+//   K5Channel<6 位日期>.xlsx  —— 带日期, 自动挑选时优先
+//   K5Channel.xlsx            —— 兜底, 只有在没有带日期的表格时才用
+// 其它名字(如 K5Channel_1.xlsx、K5Channel261020 (1).xlsx)不参与自动挑选。
+bool IsK5ChannelName(const std::wstring& stem, std::string& date) {
+    const wchar_t kPrefix[] = L"k5channel";
+    const size_t plen = 9;
+    if (stem.size() < plen) return false;
+    for (size_t i = 0; i < plen; ++i) {
+        wchar_t c = stem[i];
+        if (c >= L'A' && c <= L'Z') c = (wchar_t)(c - L'A' + L'a');
+        if (c != kPrefix[i]) return false;
+    }
+    if (stem.size() == plen) {  // 正好是 K5Channel
+        date.clear();
+        return true;
+    }
+    if (stem.size() != plen + 6) return false;  // 必须是 6 位日期, 别的一律不认
+    std::string d;
+    for (size_t i = plen; i < stem.size(); ++i) {
+        if (stem[i] < L'0' || stem[i] > L'9') return false;
+        d.push_back((char)stem[i]);
+    }
+    date = d;
+    return true;
+}
+
 std::vector<BackupItem> ListBackups(const std::wstring& dir) {
     std::vector<BackupItem> out;
     WIN32_FIND_DATAW fd;
@@ -703,17 +720,19 @@ std::vector<BackupItem> ListBackups(const std::wstring& dir) {
         if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
         std::wstring name = fd.cFileName;
         if (name.size() >= 2 && name[0] == L'~' && name[1] == L'$') continue;
+        std::string date;
+        if (!IsK5ChannelName(StemName(name), date)) continue;  // 名字不合规矩, 不参与
         BackupItem it;
         it.path = Join(dir, name);
         it.mtime = ((unsigned long long)fd.ftLastWriteTime.dwHighDateTime << 32) |
                    (unsigned long long)fd.ftLastWriteTime.dwLowDateTime;
-        it.date = YymmddFromFileTime(it.mtime);
+        it.date = date;
         out.push_back(it);
     } while (FindNextFileW(h, &fd));
     FindClose(h);
     std::sort(out.begin(), out.end(), [](const BackupItem& a, const BackupItem& b) {
-        if (a.mtime != b.mtime) return a.mtime < b.mtime;
-        return a.path < b.path;
+        if (a.mtime != b.mtime) return a.mtime < b.mtime;  // 挑最新改动的
+        return a.date < b.date;
     });
     return out;
 }
@@ -729,27 +748,41 @@ bool PickBackup(const std::wstring& dir, const std::wstring& explicitPath, std::
             err = "备份文件不存在: " + WToU8(p);
             return false;
         }
-        unsigned long long mt = 0;
-        if (!FileMtime(p, mt) || mt == 0) {
-            err = "读不到文件修改时间: " + WToU8(p);
-            return false;
+        std::string d;
+        if (IsK5ChannelName(StemName(p), d) && !d.empty()) {
+            yymmdd = d;
+            how = "手动选择 (日期取文件名)";
+        } else {
+            yymmdd = TodayYymmdd();
+            how = "手动选择 (文件名没有日期, 输出用今天)";
         }
-        yymmdd = YymmddFromFileTime(mt);
-        how = "手动选择 (输出日期取修改时间)";
         outPath = p;
         return true;
     }
 
-    std::vector<BackupItem> list = ListBackups(dir);
-    if (list.empty()) {
-        err = WToU8(dir) + " 内没找到 K5Channel*.xlsx 备份";
-        return false;
+    std::vector<BackupItem> dated, undated;
+    for (const auto& b : ListBackups(dir))
+        (b.date.empty() ? undated : dated).push_back(b);
+
+    if (!dated.empty()) {  // 1. 优先带日期的: 在这一堆里取修改时间最新的一份
+        const BackupItem& best = dated.back();  // 已按修改时间升序
+        outPath = best.path;
+        yymmdd = best.date;  // 输出日期仍按文件名里的日期
+        how = "带日期的表格里, 修改时间最新的一份";
+        return true;
     }
-    const BackupItem& best = list.back();  // 已按修改时间升序
-    outPath = best.path;
-    yymmdd = best.date;
-    how = "修改时间最新的备份";
-    return true;
+    if (!undated.empty()) {  // 2. 没有带日期的, 用 K5Channel.xlsx
+        std::sort(undated.begin(), undated.end(),
+                  [](const BackupItem& a, const BackupItem& b) { return a.mtime > b.mtime; });
+        outPath = undated[0].path;
+        yymmdd = TodayYymmdd();
+        how = "没有带日期的备份, 改用 K5Channel.xlsx (输出日期用今天)";
+        return true;
+    }
+    err = "未找到表格: " + WToU8(dir) +
+          " 里既没有 K5Channel<日期>.xlsx, 也没有 K5Channel.xlsx。\n"
+          "  （K5Channel_1.xlsx 这类带后缀的文件不会被自动选中, 请手动改名或点【选择文件…】）";
+    return false;
 }
 
 // ---------------------------------------------------------------- 主流程

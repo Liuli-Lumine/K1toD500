@@ -505,10 +505,11 @@ void StartupLog() {
     auto list = k1d500::ListBackups(dir);
     bool none = list.empty();
     if (none) {
-        text += L"备份文件 : 未找到 K5Channel*.xlsx —— 可先点【生成空白文件】\n";
+        text += L"备份文件 : 未找到 K5Channel<日期>.xlsx, 也没有 K5Channel.xlsx —— 可先点【生成空白文件】\n";
     } else {
         text += L"备份文件 : 共 " + std::to_wstring(list.size()) + L" 个\n";
-        text += L"默认备份 : " + DefaultBackupName(dir) + L"（按修改时间取最新）\n";
+        text += L"默认备份 : " + DefaultBackupName(dir) +
+                L"（带日期的表格里挑修改时间最新的；没有带日期的就用 K5Channel.xlsx）\n";
     }
 
     // 一次性设置, 避免在窗口显示前多次 EM_REPLACESEL 造成的重绘错位
