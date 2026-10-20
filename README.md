@@ -230,7 +230,12 @@ K1toD500_cpp/
 
 ## 许可证
 
-GPL-3.0，见 [LICENSE](LICENSE)。
+[GNU General Public License v3.0](LICENSE)（GPL-3.0）。
+
+Copyright (C) 2026 Liuli-Lumine
+
+这是一个 **copyleft** 协议：可以自由使用、修改、再发布，但**衍生作品必须同样以 GPL-3.0 开源**，
+并保留版权声明与协议文本；本程序不提供任何担保。
 
 ## 免责声明
 
