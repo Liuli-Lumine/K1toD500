@@ -125,50 +125,61 @@ bool ParseStrictNum(const std::string& raw, double& out) {
     return true;
 }
 
-// 频率: 不管写了什么符号/单位, 只把数字挑出来; 前三位是 MHz 整数部分。
-//   438.500 / 438.5 / 4385 / 438.5MHz / 4385兆赫兹  ->  438.5 (MHz)
-//   145.6125 / 1456125                              ->  145.6125 (MHz)
-// 电台只用得到 100.000 ~ 999.999 MHz, 超出即判为不规范。
-// converted = 原文不是规规矩矩的十进制数字(或写出来的值跟换算结果不同), 需要提示用户。
+// 频率: 优先把整串当一个数读; 读不出来(带单位/汉字的)才只挑数字。
+//   146.45 / 146.44999999999999  ->  146.45   (Excel 的浮点存储, 按数值本身取)
+//   438.500 / 438.5              ->  438.5
+//   4385 / 438.5MHz / 4385兆赫兹   ->  438.5   (挑数字: 前三位是 MHz 整数部分)
+//   145.6125                     ->  145.6125
+// 电台只用得到 100.000 ~ 999.999 MHz, 且只存到 10 Hz。
+// converted = 写法不规范(需要提示用户), 但照样转换。
 bool ParseFreqCell(const std::string& raw, double& mhz, bool& converted, std::string& why) {
     converted = false;
+    std::string s = TrimAscii(raw);
+    if (s.empty()) {
+        why = "里面没有数字";
+        return false;
+    }
+
+    // 1. 整串本身就是一个数 -> 直接用数值(顺便消掉 Excel 存出来的 146.44999999999999)
+    char* end = nullptr;
+    double lit = std::strtod(s.c_str(), &end);
+    if (end && *end == '\0' && end != s.c_str()) {
+        if (lit == 0.0) {  // 发送频率写 0 = 直频, 由调用方处理
+            mhz = 0.0;
+            return true;
+        }
+        if (lit >= 100.0 && lit < 1000.0) {
+            long long v = (long long)std::llround(lit * 100000.0);  // 电台分辨率 10 Hz
+            mhz = (double)v / 100000.0;
+            if (mhz >= 1000.0) {
+                why = "超出 100~999.999 MHz";
+                return false;
+            }
+            return true;  // 规范的数字写法, 不提示
+        }
+        // 例如 4385: 不是一个合法的 MHz 值, 交给下面按"前三位"解释
+    }
+
+    // 2. 只挑数字: 前三位当 MHz 整数部分, 后面当小数(最多 5 位)
     std::string d;
-    for (char c : raw)
+    for (char c : s)
         if (c >= '0' && c <= '9') d.push_back(c);
     if (d.empty()) {
         why = "里面没有数字";
         return false;
-    }
-    if (d == "0") {  // 发送频率写 0 表示直频, 由调用方处理
-        mhz = 0.0;
-        return true;
     }
     if (d.size() < 3) {
         why = "有效数字不足三位";
         return false;
     }
     std::string fp = d.substr(3);
-    if (fp.size() > 5) fp.resize(5);  // 电台只存到 10 Hz
+    if (fp.size() > 5) fp.resize(5);
     mhz = std::strtod((d.substr(0, 3) + "." + (fp.empty() ? "0" : fp)).c_str(), nullptr);
     if (!(mhz >= 100.0 && mhz < 1000.0)) {
         why = "超出 100~999.999 MHz";
         return false;
     }
-
-    // 判断原文是否已经是规范写法: 纯数字+最多一个小数点, 且数值就是换算结果
-    std::string s = TrimAscii(raw);
-    bool clean = !s.empty();
-    bool dot = false;
-    for (char c : s) {
-        if (c >= '0' && c <= '9') continue;
-        if (c == '.' && !dot) {
-            dot = true;
-            continue;
-        }
-        clean = false;
-        break;
-    }
-    converted = !clean || std::fabs(std::strtod(s.c_str(), nullptr) - mhz) > 5e-6;
+    converted = true;
     return true;
 }
 
