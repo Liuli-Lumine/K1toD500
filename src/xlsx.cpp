@@ -255,6 +255,12 @@ bool LoadSheet(const std::wstring& path, const std::string& sheetName, Cells& ou
                std::string& err) {
     out.m.clear();
     err.clear();
+    unsigned long long fsz = 0;
+    if (FileSizeBytes(path, fsz) && fsz > kMaxInputBytes) {
+        err = "文件过大(" + std::to_string(fsz / 1024ull) + " KB)，上限 " +
+              std::to_string(kMaxInputBytes / 1024ull) + " KB";
+        return false;
+    }
     std::vector<uint8_t> bytes;
     if (!ReadAll(path, bytes)) {
         err = "无法读取文件";

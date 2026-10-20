@@ -28,7 +28,8 @@ rc /nologo /fo build\app.res /I src /I res res\app.rc
 if errorlevel 1 goto fail
 echo [MSVC] compiling and linking...
 cl /nologo /O2 /utf-8 /std:c++17 /EHsc /W4 /MT /D_WIN32_WINNT=0x0601 /DNTDDI_VERSION=0x06010000 /DUNICODE /D_UNICODE /I src ^
-    src\core.cpp src\util.cpp src\xlsx.cpp src\zip.cpp src\inflate.cpp src\gui.cpp build\app.res ^
+    src\core.cpp src\util.cpp src\xlsx.cpp src\zip.cpp src\inflate.cpp ^
+    src\d500dat.cpp src\reverse.cpp src\xlsxgen.cpp src\gui.cpp build\app.res ^
     /Fe:build\K1toD500.exe ^
     /link /SUBSYSTEM:WINDOWS /NODEFAULTLIB:OLDNAMES.lib ^
     user32.lib gdi32.lib comctl32.lib comdlg32.lib shell32.lib
@@ -42,7 +43,8 @@ if errorlevel 1 goto fail
 echo [MinGW] compiling and linking...
 g++ -std=c++17 -O2 -mwindows -static -static-libgcc -static-libstdc++ ^
     -D_WIN32_WINNT=0x0601 -DUNICODE -D_UNICODE -I src ^
-    src\core.cpp src\util.cpp src\xlsx.cpp src\zip.cpp src\inflate.cpp src\gui.cpp build\app.res.o ^
+    src\core.cpp src\util.cpp src\xlsx.cpp src\zip.cpp src\inflate.cpp ^
+    src\d500dat.cpp src\reverse.cpp src\xlsxgen.cpp src\gui.cpp build\app.res.o ^
     -o build\K1toD500.exe -lcomctl32 -lcomdlg32 -lshell32 -lgdi32 -luser32
 if errorlevel 1 goto fail
 goto done

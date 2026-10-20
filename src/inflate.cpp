@@ -154,7 +154,7 @@ int ReadDynamicTables(BitIn& br, Huff& lit, Huff& dist) {
     return 0;
 }
 
-bool InflateBlocks(BitIn& br, std::vector<uint8_t>& out, std::string& err) {
+bool InflateBlocks(BitIn& br, std::vector<uint8_t>& out, size_t limit, std::string& err) {
     int last = 0;
     do {
         last = br.Need(1);
@@ -177,6 +177,10 @@ bool InflateBlocks(BitIn& br, std::vector<uint8_t>& out, std::string& err) {
             }
             if ((uint16_t)(~n & 0xFFFF) != (uint16_t)nn) {
                 err = "stored 块长度校验失败";
+                return false;
+            }
+            if (out.size() + (size_t)n > limit) {
+                err = "解压数据超过上限";
                 return false;
             }
             for (int i = 0; i < n; ++i) {
@@ -209,6 +213,10 @@ bool InflateBlocks(BitIn& br, std::vector<uint8_t>& out, std::string& err) {
                 return false;
             }
             if (sym < 256) {
+                if (out.size() >= limit) {
+                    err = "解压数据超过上限";
+                    return false;
+                }
                 out.push_back((uint8_t)sym);
                 continue;
             }
@@ -239,6 +247,10 @@ bool InflateBlocks(BitIn& br, std::vector<uint8_t>& out, std::string& err) {
                 err = "回溯距离超出已解压数据";
                 return false;
             }
+            if (out.size() + (size_t)len > limit) {
+                err = "解压数据超过上限";
+                return false;
+            }
             size_t from = out.size() - back;
             for (int k = 0; k < len; ++k) out.push_back(out[from + (size_t)k]);
         }
@@ -256,9 +268,13 @@ bool InflateRaw(const uint8_t* in, size_t inLen, size_t expectedSize,
         err = "空的压缩数据";
         return false;
     }
+    // 输出上限: 有预期长度就按它封顶, 否则用绝对上限, 防止解压炸弹把内存吃光
+    const size_t kMaxInflateBytes = 64u * 1024u * 1024u;
+    size_t limit = expectedSize > 0 ? expectedSize : kMaxInflateBytes;
+    if (limit > kMaxInflateBytes) limit = kMaxInflateBytes;
     BitIn br(in, inLen);
     if (expectedSize > 0) out.reserve(expectedSize);
-    if (!InflateBlocks(br, out, err)) return false;
+    if (!InflateBlocks(br, out, limit, err)) return false;
     if (expectedSize > 0 && out.size() != expectedSize) {
         err = "解压长度不符";
         out.clear();

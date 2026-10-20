@@ -21,6 +21,7 @@ struct ReverseResult {
     std::string log;
     std::wstring outPath;
     int channels = 0;  // 有内容的信道数
+    bool tooLarge = false;  // 输入文件超过大小上限
 };
 
 // 反向转换的默认输出名: K5Channel<今天日期>.xlsx

@@ -119,6 +119,12 @@ bool ZipExtract(const std::vector<uint8_t>& zip, const ZipEntry& e, std::vector<
         err = "不支持的压缩方法 " + std::to_string(e.method) + ": " + e.name;
         return false;
     }
+    // CRC 校验: 压缩包里每个条目都带校验码, 对不上说明文件损坏 / 被改过
+    if (Crc32(out.data(), out.size()) != e.crc) {
+        err = "CRC 校验失败(文件可能已损坏): " + e.name;
+        out.clear();
+        return false;
+    }
     return true;
 }
 

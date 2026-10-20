@@ -58,6 +58,12 @@ bool g_busy = false;
 
 int S(int v) { return MulDiv(v, g_dpi, 96); }
 
+// 布局需要的最小客户区 (与 Layout 里的常量对应), 高分屏下按 DPI 放大
+int MinClientWidth() {
+    return S(2 * 16 + 150 + 10 + 116 + 10 + 126 + 10 + 104 + 44 + 140);
+}
+int MinClientHeight() { return S(16 + 30 + 2 + 18 + 12 + 44 + 6 + 20 + 10 + 60 + 22 + 6 + 14); }
+
 int GetDpi(HWND hwnd) {
     typedef UINT(WINAPI * PFN_GetDpiForWindow)(HWND);
     static PFN_GetDpiForWindow fn =
@@ -257,6 +263,13 @@ void DoConvert() {
     } else if (r.code == 4) {
         SetStatus(L"已取消");
         // 用户刚在重名对话框里选了取消, 不再弹窗
+    } else if (r.tooLarge) {
+        SetStatus(L"文件过大");
+        MessageBoxW(g_hMain,
+                    L"选中的文件超过 2 MB，已拒绝转换。\r\n\r\n"
+                    L"正常的信道表格就算 200 条全部填满也只有几十 KB，\r\n"
+                    L"请确认是不是选错了文件。",
+                    L"文件过大", MB_OK | MB_ICONWARNING);
     } else {
         SetStatus(r.code == 3 ? L"往返自检失败" : (r.code == 2 ? L"结构自检失败" : L"转换失败"));
         std::wstring title = (r.code == 3 || r.code == 2) ? L"自检未通过" : L"转换失败";
@@ -309,7 +322,7 @@ void DoBlank() {
     }
     std::wstring dir = k1d500::ExeDir();
     std::wstring stem = L"K5Channel" + k1d500::U8(k1d500::TodayYymmdd());
-    std::wstring out = k1d500::UniquePath(dir, stem, L".xlsx");
+    std::wstring out = k1d500::UniqueSuffixedPath(dir, stem, L".xlsx");
     if (!k1d500::WriteAll(out, g_blankXlsx.data(), g_blankXlsx.size())) {
         MessageBoxW(g_hMain, (L"写入失败：\r\n" + out +
                               L"\r\n\r\n请确认程序所在目录可写（不要放在 C:\\Program Files 下）。")
@@ -320,9 +333,6 @@ void DoBlank() {
     AppendLog(L"");
     AppendLog(L"已生成空白表格: " + out);
     SetStatus(L"已生成空白文件");
-    if (!g_selected.empty()) {
-        // 刚生成的空白表不会自动变成待转换文件（里面没有信道）
-    }
     std::wstring msg = L"已生成空白信道表格：\r\n" + out +
                        L"\r\n\r\n用泉盛 K1 写频软件打开它、填好信道（或直接从电台导出备份）后，"
                        L"回到本程序点【转换】即可。\r\n\r\n现在打开所在文件夹吗？";
@@ -435,6 +445,12 @@ void DoReverse() {
             L"已生成泉盛信道表格：\r\n" + r.outPath + L"\r\n\r\n现在打开所在文件夹吗？";
         if (MessageBoxW(g_hMain, msg.c_str(), L"转换成功", MB_YESNO | MB_ICONINFORMATION) == IDYES)
             OpenFolderSelect(r.outPath);
+    } else if (r.tooLarge) {
+        SetStatus(L"文件过大");
+        MessageBoxW(g_hMain,
+                    L"选中的 .dat 超过 2 MB，已拒绝读取。\r\n\r\n"
+                    L"D500 的写频文件只有一百多 KB，请确认是不是选错了文件。",
+                    L"文件过大", MB_OK | MB_ICONWARNING);
     } else {
         SetStatus(L"反向转换失败");
         MessageBoxW(g_hMain, L"没有转换成功，原因见下方日志。", L"转换失败", MB_OK | MB_ICONWARNING);
@@ -487,17 +503,12 @@ void StartupLog() {
     text += L"程序目录 : " + dir + L"\n";
 
     auto list = k1d500::ListBackups(dir);
-    int dated = 0;
-    for (const auto& b : list)
-        if (!b.date.empty()) ++dated;
-
     bool none = list.empty();
     if (none) {
         text += L"备份文件 : 未找到 K5Channel*.xlsx —— 可先点【生成空白文件】\n";
     } else {
-        text += L"备份文件 : 共 " + std::to_wstring(list.size()) + L" 个（带日期 " +
-                std::to_wstring(dated) + L" 个）\n";
-        text += L"默认备份 : " + DefaultBackupName(dir) + L"\n";
+        text += L"备份文件 : 共 " + std::to_wstring(list.size()) + L" 个\n";
+        text += L"默认备份 : " + DefaultBackupName(dir) + L"（按修改时间取最新）\n";
     }
 
     // 一次性设置, 避免在窗口显示前多次 EM_REPLACESEL 造成的重绘错位
@@ -638,8 +649,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
         case WM_GETMINMAXINFO: {
             auto* mmi = (MINMAXINFO*)lp;
-            mmi->ptMinTrackSize.x = S(660);
-            mmi->ptMinTrackSize.y = S(520);
+            RECT r = {0, 0, MinClientWidth(), MinClientHeight()};
+            AdjustWindowRectEx(&r, WS_OVERLAPPEDWINDOW, FALSE, 0);
+            mmi->ptMinTrackSize.x = r.right - r.left;
+            mmi->ptMinTrackSize.y = r.bottom - r.top;
             return 0;
         }
 
@@ -777,14 +790,39 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int nShow) {
     wc.lpszClassName = L"K1toD500Window";
     if (!RegisterClassExW(&wc)) return 1;
 
-    RECT rc = {0, 0, 900, 830};
+    // 首屏尺寸按当前 DPI 换算: 直接用 900x830 物理像素的话, 125%/150% 缩放时
+    // S() 放大后的按钮会超出窗口, 最右边那个按钮被切掉
+    {
+        typedef UINT(WINAPI * PFN_GetDpiForSystem)();
+        static PFN_GetDpiForSystem fn =
+            (PFN_GetDpiForSystem)GetProcAddress(GetModuleHandleW(L"user32.dll"), "GetDpiForSystem");
+        UINT sysDpi = fn ? fn() : 96;
+        if (sysDpi >= 72) g_dpi = (int)sysDpi;
+    }
+
+    int cw = S(900);
+    int chh = S(830);
+    if (cw < MinClientWidth()) cw = MinClientWidth();
+    if (chh < MinClientHeight()) chh = MinClientHeight();
+
+    RECT rc = {0, 0, cw, chh};
     AdjustWindowRectEx(&rc, WS_OVERLAPPEDWINDOW, FALSE, 0);
+    int ww = rc.right - rc.left;
+    int wh = rc.bottom - rc.top;
+
+    // 窗口别超出工作区 (小屏 / 高缩放时按可用空间收一下)
+    RECT work = {0, 0, 0, 0};
+    if (SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0)) {
+        int aw = work.right - work.left;
+        int ah = work.bottom - work.top;
+        if (aw > 0 && ww > aw) ww = aw;
+        if (ah > 0 && wh > ah) wh = ah;
+    }
+
     HWND hwnd = CreateWindowExW(0, wc.lpszClassName, L"泉盛信道",
                                 WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, CW_USEDEFAULT, CW_USEDEFAULT,
-                                rc.right - rc.left, rc.bottom - rc.top, nullptr, nullptr, hInst,
-                                nullptr);
+                                ww, wh, nullptr, nullptr, hInst, nullptr);
     if (!hwnd) return 1;
-
     ShowWindow(hwnd, nShow);
     UpdateWindow(hwnd);
 

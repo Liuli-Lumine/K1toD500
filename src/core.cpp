@@ -103,17 +103,25 @@ std::string Hex2(int v) {
     return std::string(b);
 }
 
-bool ParseNum(const std::string& raw, double& out) {
+// 只认十进制数字: 允许前后空白、最多一个小数点; 不接受正负号、指数、单位、千分位
+bool ParseStrictNum(const std::string& raw, double& out) {
     std::string s = TrimAscii(raw);
     if (s.empty()) return false;
-    char* end = nullptr;
-    double v = std::strtod(s.c_str(), &end);
-    if (end == s.c_str()) return false;
-    while (*end) {
-        if (!std::isspace((unsigned char)*end)) return false;
-        ++end;
+    bool dot = false;
+    bool digit = false;
+    for (char c : s) {
+        if (c >= '0' && c <= '9') {
+            digit = true;
+            continue;
+        }
+        if (c == '.' && !dot) {
+            dot = true;
+            continue;
+        }
+        return false;
     }
-    out = v;
+    if (!digit) return false;
+    out = std::strtod(s.c_str(), nullptr);
     return true;
 }
 
@@ -151,8 +159,17 @@ int BwNarrow(const std::string& raw) {  // -1 未指定/认不得, 0 宽, 1 窄
 }
 
 bool BusyOn(const std::string& raw) {
-    std::string s = AsciiUpper(TrimAscii(raw));
+    std::string s = AsciiUpper(TrimAscii(NfkcLite(raw)));
     return s == "开" || s == "是" || s == "ON" || s == "YES" || s == "TRUE" || s == "Y" || s == "1";
+}
+
+// 空 = 用默认(关); 认得的开/关都算规范; 其余算瞎填
+bool BusyRecognized(const std::string& raw) {
+    std::string s = AsciiUpper(TrimAscii(NfkcLite(raw)));
+    if (s.empty()) return true;
+    return s == "开" || s == "是" || s == "ON" || s == "YES" || s == "TRUE" || s == "Y" ||
+           s == "1" || s == "关" || s == "否" || s == "OFF" || s == "NO" || s == "FALSE" ||
+           s == "N" || s == "0";
 }
 
 struct DcsParsed {
@@ -193,17 +210,6 @@ int DcsIndex(const std::string& code3) {
 }
 
 // ---------------------------------------------------------------- 信道
-struct Channel {
-    int row = 0;
-    int no = 0;
-    std::string name;
-    double rx = 0, tx = 0;
-    std::string rType, tType, rCode, tCode;
-    double rVal = 0, tVal = 0;
-    bool hasRVal = false, hasTVal = false;
-    std::string bw, pwr, busy, mode;
-};
-
 struct TonePlan {
     int kind = 0;   // 0 无, 1 模拟, 2 数字
     int value = 0;  // 实际存进 .dat 的整数 (模拟: Hz*10; 数字: 序号(+105))
@@ -215,51 +221,47 @@ struct TailPlan {
     bool busy = false;
 };
 
+struct Channel {
+    int row = 0;
+    int no = 0;
+    std::string name;
+    double rx = 0, tx = 0;
+    // 亚音原文 (解析用)
+    std::string rType, tType, rCode, tCode;
+    double rVal = 0, tVal = 0;
+    bool hasRVal = false, hasTVal = false;
+    std::string bw, pwrText, busyText, mode;
+    // 解析结果
+    TonePlan rTone, tTone;
+    int pwr = -1;   // -1 = 表格没填, 沿用基准
+    int nar = -1;   // -1 = 表格没填, 沿用基准
+    bool busy = false;
+};
+
 struct Plan {
     double rx = 0, tx = 0;
     TonePlan rTone, tTone;
     TailPlan tail;
 };
 
-std::vector<Channel> ReadChannels(const Cells& cells) {
-    std::vector<Channel> out;
-    int maxRow = cells.MaxRow();
-    for (int r = 2; r <= maxRow; ++r) {
-        double no, rx;
-        if (!ParseNum(cells.Get(r, C_NO), no)) continue;
-        if (!ParseNum(cells.Get(r, C_RX), rx)) continue;
-        Channel ch;
-        ch.row = r;
-        ch.no = (int)no;
-        ch.name = cells.Get(r, C_NAME);
-        ch.rx = rx;
-        double tx;
-        if (!ParseNum(cells.Get(r, C_TX), tx) || tx == 0.0) tx = rx;
-        ch.tx = tx;
-        ch.rType = TrimAscii(cells.Get(r, C_RTYPE));
-        ch.tType = TrimAscii(cells.Get(r, C_TTYPE));
-        ch.hasRVal = ParseNum(cells.Get(r, C_RVAL), ch.rVal);
-        ch.hasTVal = ParseNum(cells.Get(r, C_TVAL), ch.tVal);
-        ch.rCode = TrimAscii(cells.Get(r, C_RCODE));
-        ch.tCode = TrimAscii(cells.Get(r, C_TCODE));
-        ch.bw = cells.Get(r, C_BW);
-        ch.pwr = cells.Get(r, C_PWR);
-        ch.busy = cells.Get(r, C_BUSY);
-        ch.mode = cells.Get(r, C_MODE);
-        out.push_back(ch);
-    }
-    return out;
-}
+// ---------------------------------------------------------------- 读表 + 校验
+// 一行里任何一项填得不规范, 整条信道都不转换, 并在日志里写明是哪一项
+struct ReadOutcome {
+    std::vector<Channel> chans;
+    int skipped = 0;
+    std::vector<std::string> problems;  // 已排好序的日志行
+};
 
-// 亚音输入 -> 编码决策 (优先级与 Python 版一致)
-TonePlan TonePlanFor(const Channel& ch, bool txSide, LogBuf& log) {
+// 亚音输入 -> 编码决策 (优先级与 Python 版一致); 返回 false = 这一侧填得不完整
+bool TonePlanFor(const Channel& ch, bool txSide, TonePlan& out, std::string& why, LogBuf& log) {
     const std::string& typ = txSide ? ch.tType : ch.rType;
     const std::string& codeRaw = txSide ? ch.tCode : ch.rCode;
     double hz = txSide ? ch.tVal : ch.rVal;
     bool hasVal = txSide ? ch.hasTVal : ch.hasRVal;
     const std::string which = txSide ? "发送" : "接收";
 
-    TonePlan p;
+    out = TonePlan();
+    why.clear();
     std::string t = TrimAscii(typ);
     std::string s = TrimAscii(codeRaw);
     DcsParsed d = ParseDcs(s);
@@ -268,7 +270,7 @@ TonePlan TonePlanFor(const Channel& ch, bool txSide, LogBuf& log) {
     bool hasAna = hasVal && hz > 0;
     bool inverted = (d.suffix != 0) ? (d.suffix == 2) : (t == "反向数字亚音");
 
-    auto analog = [&]() -> TonePlan {
+    auto analog = [&]() {
         // Python: round(hz,1) 再 *10 取整
         double hv = std::nearbyint(hz * 10.0) / 10.0;
         int v10 = (int)std::nearbyint(hv * 10.0);
@@ -276,81 +278,181 @@ TonePlan TonePlanFor(const Channel& ch, bool txSide, LogBuf& log) {
             log.Warn("信道" + N(ch.no) + " " + which + " 模拟亚音 " + FmtG(hz) + "Hz 编码后为 " +
                      N(v10) + ", 落在数字亚音区间 (1.." + N(TONE_DIGITAL_MAX) +
                      ") —— D500 靠数值区间区分模拟/数字, 电台会当成 DCS 码");
-        TonePlan q;
-        q.kind = 1;
-        q.value = v10;
-        return q;
+        out.kind = 1;
+        out.value = v10;
     };
-    auto digital = [&]() -> TonePlan {
-        TonePlan q;
-        q.kind = 2;
-        q.value = idx + (inverted ? DCS_INVERT_OFFSET : 0);
-        return q;
+    auto digital = [&]() {
+        out.kind = 2;
+        out.value = idx + (inverted ? DCS_INVERT_OFFSET : 0);
     };
-
-    if (!s.empty() && !hasDig)
-        log.Warn("信道" + N(ch.no) + " " + which + " 数字亚音码 “" + s + "” " +
-                 (d.ok ? "码表里没这一条" : "不是数字亚音码") + ", 忽略该格");
 
     if (hasDig && d.suffix != 0) {  // 1. 后缀最硬
         if (!t.empty() && t != "数字亚音" && t != "反向数字亚音")
             log.Warn("信道" + N(ch.no) + " " + which + " 类型列 “" + t + "” 与码列 “" + s +
                      "” 的后缀不一致, 以后缀为准(" + (inverted ? "反向" : "正向") + ")");
-        return digital();
+        digital();
+        return true;
     }
     if (hasDig && hasAna) {  // 2. 两列都填、码无后缀 -> 类型列说了算
-        if (t == "数字亚音" || t == "反向数字亚音") return digital();
+        if (t == "数字亚音" || t == "反向数字亚音") {
+            digital();
+            return true;
+        }
         if (t.empty())
             log.Warn("信道" + N(ch.no) + " " + which + " 数字亚音码 “" + s + "” 与模拟亚音 " +
                      FmtG(hz) + "Hz 都填了、类型列空且码无后缀, 按模拟亚音处理");
-        return analog();
+        analog();
+        return true;
     }
     if (hasDig) {  // 3. 只有数字亚音码 -> 忽略类型列
         if (!t.empty() && t != "数字亚音" && t != "反向数字亚音")
             log.Warn("信道" + N(ch.no) + " " + which + " 类型列 “" + t + "” 但只填了数字亚音码 “" +
                      s + "”, 以数字亚音为准");
-        return digital();
+        digital();
+        return true;
     }
     if (hasAna) {  // 4. 只有模拟亚音频率 -> 忽略类型列
         if (!t.empty() && t != "亚音频")
             log.Warn("信道" + N(ch.no) + " " + which + " 类型列 “" + t + "” 但只填了模拟亚音 " +
                      FmtG(hz) + "Hz, 以模拟亚音为准");
-        return analog();
+        analog();
+        return true;
     }
-    if (!t.empty()) {  // 5. 两列都没填 -> 不保留亚音
-        if (t == "数字亚音" || t == "反向数字亚音")
-            log.Warn("信道" + N(ch.no) + " " + which + " 填了亚音类型 “" + t +
-                     "” 却没填数字亚音码, 不保留亚音");
-        else if (t == "亚音频")
-            log.Warn("信道" + N(ch.no) + " " + which + " 填了亚音类型 “" + t +
-                     "” 却没填亚音频率, 不保留亚音");
-        else
-            log.Warn("信道" + N(ch.no) + " " + which + " 亚音类型 “" + t +
-                     "” 暂不支持, 不保留亚音");
+    if (!t.empty()) {  // 5. 填了类型, 但既没有可用的码也没有可用的频率
+        why = which + "亚音";
+        return false;
     }
-    return p;
+    return true;  // 什么都没填 = 不保留亚音
 }
 
-TailPlan TailPlanFor(const Channel& ch, LogBuf& log) {
-    TailPlan t;
-    t.pwr = PowerCode(ch.pwr);
-    if (t.pwr < 0 && !TrimAscii(ch.pwr).empty())
-        log.Warn("信道" + N(ch.no) + " 发送功率 “" + TrimAscii(ch.pwr) + "” 无法识别, 沿用基准值");
-    t.nar = BwNarrow(ch.bw);
-    if (t.nar < 0 && !TrimAscii(ch.bw).empty())
-        log.Warn("信道" + N(ch.no) + " 带宽 “" + TrimAscii(ch.bw) + "” 无法识别, 沿用基准值");
-    t.busy = BusyOn(ch.busy);
-    return t;
-}
-
-Plan MakePlan(const Channel& ch, LogBuf& log) {
+Plan ToPlan(const Channel& ch) {
     Plan p;
     p.rx = ch.rx;
     p.tx = ch.tx;
-    p.rTone = TonePlanFor(ch, false, log);
-    p.tTone = TonePlanFor(ch, true, log);
-    p.tail = TailPlanFor(ch, log);
+    p.rTone = ch.rTone;
+    p.tTone = ch.tTone;
+    p.tail.pwr = ch.pwr;
+    p.tail.nar = ch.nar;
+    p.tail.busy = ch.busy;
     return p;
+}
+
+// 逐行读表: 空行跳过; 有任何一项认不出来就整条跳过并记录原因
+ReadOutcome ReadChannels(const Cells& cells, LogBuf& log) {
+    ReadOutcome st;
+    int maxRow = cells.MaxRow();
+    for (int r = 2; r <= maxRow; ++r) {
+        std::string rawNo = cells.Get(r, C_NO);
+        std::string rawRx = cells.Get(r, C_RX);
+        if (TrimAscii(rawNo).empty() && TrimAscii(rawRx).empty()) continue;  // 整行空白
+
+        // 模板把 200 个信道号预先填好了: 只填了号、别的全空 -> 当成空行, 不当成填错
+        if (TrimAscii(rawRx).empty()) {
+            const int otherCols[] = {C_NAME, C_BW,  C_TX,   C_PWR,  C_RTYPE, C_RVAL,
+                                     C_RCODE, C_TTYPE, C_TVAL, C_TCODE, C_BUSY, C_MODE};
+            bool untouched = true;
+            for (int c : otherCols) {
+                if (!TrimAscii(cells.Get(r, c)).empty()) {
+                    untouched = false;
+                    break;
+                }
+            }
+            if (untouched) continue;
+        }
+
+        std::vector<std::string> bad;
+        Channel ch;
+        ch.row = r;
+        ch.name = cells.Get(r, C_NAME);
+
+        // 信道号
+        double noV = 0;
+        bool noOk = ParseStrictNum(rawNo, noV);
+        bool noInt = noOk && std::fabs(noV - std::nearbyint(noV)) < 1e-9;
+        std::string label =
+            (noOk && noInt) ? ("信道" + N((long long)std::nearbyint(noV))) : ("第" + N(r) + "行");
+        if (!noOk)
+            bad.push_back("信道号");
+        else if (!noInt)
+            bad.push_back("信道号(不是整数)");
+        else if (std::fabs(noV) > 1e6)
+            bad.push_back("信道号(超出范围)");
+        else
+            ch.no = (int)std::nearbyint(noV);
+
+        // 收发频率
+        if (TrimAscii(rawRx).empty())
+            bad.push_back("接收频率(没填)");
+        else if (!ParseStrictNum(rawRx, ch.rx))
+            bad.push_back("接收频率");
+        else if (!(ch.rx > 0.0 && ch.rx < 1000.0))
+            bad.push_back("接收频率(超出范围)");
+
+        std::string rawTx = cells.Get(r, C_TX);
+        if (TrimAscii(rawTx).empty())
+            ch.tx = ch.rx;  // 不填 = 直频
+        else if (!ParseStrictNum(rawTx, ch.tx))
+            bad.push_back("发送频率");
+        else if (ch.tx == 0.0)
+            ch.tx = ch.rx;  // 填 0 也按直频
+        else if (!(ch.tx > 0.0 && ch.tx < 1000.0))
+            bad.push_back("发送频率(超出范围)");
+
+        // 亚音 (先只做语法检查, 语义在后面统一判)
+        ch.rType = TrimAscii(cells.Get(r, C_RTYPE));
+        ch.tType = TrimAscii(cells.Get(r, C_TTYPE));
+        ch.rCode = TrimAscii(cells.Get(r, C_RCODE));
+        ch.tCode = TrimAscii(cells.Get(r, C_TCODE));
+        std::string rawRVal = cells.Get(r, C_RVAL);
+        std::string rawTVal = cells.Get(r, C_TVAL);
+        ch.hasRVal = ParseStrictNum(rawRVal, ch.rVal);
+        ch.hasTVal = ParseStrictNum(rawTVal, ch.tVal);
+        if (!ch.hasRVal && !TrimAscii(rawRVal).empty()) bad.push_back("接收亚音频率");
+        if (!ch.hasTVal && !TrimAscii(rawTVal).empty()) bad.push_back("发送亚音频率");
+        if (!ch.rCode.empty()) {
+            DcsParsed d = ParseDcs(ch.rCode);
+            if (!d.ok || DcsIndex(d.code) == 0) bad.push_back("接收数字亚音码");
+        }
+        if (!ch.tCode.empty()) {
+            DcsParsed d = ParseDcs(ch.tCode);
+            if (!d.ok || DcsIndex(d.code) == 0) bad.push_back("发送数字亚音码");
+        }
+
+        // 功率 / 带宽 / 繁忙禁发
+        ch.pwrText = cells.Get(r, C_PWR);
+        ch.pwr = PowerCode(ch.pwrText);
+        if (ch.pwr < 0 && !TrimAscii(ch.pwrText).empty()) bad.push_back("发送功率");
+
+        ch.bw = cells.Get(r, C_BW);
+        ch.nar = BwNarrow(ch.bw);
+        if (ch.nar < 0 && !TrimAscii(ch.bw).empty()) bad.push_back("带宽");
+
+        ch.busyText = cells.Get(r, C_BUSY);
+        if (!BusyRecognized(ch.busyText)) bad.push_back("繁忙禁发");
+        ch.busy = BusyOn(ch.busyText);
+
+        ch.mode = cells.Get(r, C_MODE);
+
+        // 语法都没问题, 再判亚音语义 (避免给被跳过的信道刷警告)
+        if (bad.empty()) {
+            std::string why;
+            if (!TonePlanFor(ch, false, ch.rTone, why, log)) bad.push_back(why);
+            if (!TonePlanFor(ch, true, ch.tTone, why, log)) bad.push_back(why);
+        }
+
+        if (!bad.empty()) {
+            ++st.skipped;
+            for (size_t i = 0; i < bad.size(); ++i) {
+                bool dup = false;
+                for (size_t j = 0; j < i; ++j)
+                    if (bad[j] == bad[i]) dup = true;
+                if (!dup) st.problems.push_back(label + " " + bad[i] + "不规范，不进行转换");
+            }
+            continue;
+        }
+        st.chans.push_back(ch);
+    }
+    return st;
 }
 
 std::array<uint8_t, 16> BuildPayload(const Channel& ch, const Plan& plan, bool& ok,
@@ -476,15 +578,12 @@ bool BuildRows(const uint8_t* blob, size_t len, std::vector<Row>& rows, std::str
     return true;
 }
 
-// 日期: 文件名末尾 6 位数字
-bool StemDate(const std::wstring& stem, std::string& date) {
-    if (stem.size() < 6) return false;
-    std::string d;
-    for (size_t i = stem.size() - 6; i < stem.size(); ++i) {
-        if (stem[i] < L'0' || stem[i] > L'9') return false;
-        d.push_back((char)stem[i]);
-    }
-    date = d;
+// 取文件的修改时间 (FILETIME); 失败返回 false
+bool FileMtime(const std::wstring& path, unsigned long long& ft) {
+    WIN32_FILE_ATTRIBUTE_DATA fad;
+    if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &fad)) return false;
+    ft = ((unsigned long long)fad.ftLastWriteTime.dwHighDateTime << 32) |
+         (unsigned long long)fad.ftLastWriteTime.dwLowDateTime;
     return true;
 }
 
@@ -515,6 +614,7 @@ std::string HeaderCheckError(const Cells& cells) {
 }  // namespace
 
 // ---------------------------------------------------------------- 备份选择
+// 一律按文件修改时间排序, 不再猜文件名里的日期
 std::vector<BackupItem> ListBackups(const std::wstring& dir) {
     std::vector<BackupItem> out;
     WIN32_FIND_DATAW fd;
@@ -527,15 +627,15 @@ std::vector<BackupItem> ListBackups(const std::wstring& dir) {
         if (name.size() >= 2 && name[0] == L'~' && name[1] == L'$') continue;
         BackupItem it;
         it.path = Join(dir, name);
-        StemDate(StemName(name), it.date);
         it.mtime = ((unsigned long long)fd.ftLastWriteTime.dwHighDateTime << 32) |
                    (unsigned long long)fd.ftLastWriteTime.dwLowDateTime;
+        it.date = YymmddFromFileTime(it.mtime);
         out.push_back(it);
     } while (FindNextFileW(h, &fd));
     FindClose(h);
     std::sort(out.begin(), out.end(), [](const BackupItem& a, const BackupItem& b) {
-        if (a.date != b.date) return a.date < b.date;
-        return a.mtime < b.mtime;
+        if (a.mtime != b.mtime) return a.mtime < b.mtime;
+        return a.path < b.path;
     });
     return out;
 }
@@ -551,41 +651,27 @@ bool PickBackup(const std::wstring& dir, const std::wstring& explicitPath, std::
             err = "备份文件不存在: " + WToU8(p);
             return false;
         }
-        std::string d;
-        if (StemDate(StemName(p), d)) {
-            yymmdd = d;
-            how = "文件名日期";
-        } else {
-            yymmdd = TodayYymmdd();
-            how = "文件名无日期, 用今天";
+        unsigned long long mt = 0;
+        if (!FileMtime(p, mt) || mt == 0) {
+            err = "读不到文件修改时间: " + WToU8(p);
+            return false;
         }
+        yymmdd = YymmddFromFileTime(mt);
+        how = "手动选择 (输出日期取修改时间)";
         outPath = p;
         return true;
     }
 
     std::vector<BackupItem> list = ListBackups(dir);
-    std::vector<BackupItem> dated, undated;
-    for (const auto& b : list) {
-        if (b.date.empty()) undated.push_back(b);
-        else dated.push_back(b);
+    if (list.empty()) {
+        err = WToU8(dir) + " 内没找到 K5Channel*.xlsx 备份";
+        return false;
     }
-    if (!dated.empty()) {
-        const BackupItem& best = dated.back();  // 已按 (日期, 时间) 升序
-        outPath = best.path;
-        yymmdd = best.date;
-        how = "日期最新的备份";
-        return true;
-    }
-    if (!undated.empty()) {
-        std::sort(undated.begin(), undated.end(),
-                  [](const BackupItem& a, const BackupItem& b) { return a.mtime > b.mtime; });
-        outPath = undated[0].path;
-        yymmdd = TodayYymmdd();
-        how = "无带日期备份, 改用不带日期的文件 (输出用今天)";
-        return true;
-    }
-    err = WToU8(dir) + " 内没找到 K5Channel*.xlsx 备份";
-    return false;
+    const BackupItem& best = list.back();  // 已按修改时间升序
+    outPath = best.path;
+    yymmdd = best.date;
+    how = "修改时间最新的备份";
+    return true;
 }
 
 // ---------------------------------------------------------------- 主流程
@@ -611,6 +697,17 @@ Result Convert(const uint8_t* baseBlob, size_t baseLen, const Options& opt) {
         log.Line("K1 备份 : " + WToU8(BaseName(backup)) + "   (" + how + ", 输出日期 " + yymmdd +
                  ")");
 
+        // 大小上限: 满打满算的信道表格也就几十 KB, 超过 2 MB 一律当异常文件拒收
+        unsigned long long fsz = 0;
+        if (FileSizeBytes(backup, fsz) && fsz > kMaxInputBytes) {
+            log.Line("文件过大: " + WToU8(BaseName(backup)) + " 有 " + N((long long)(fsz / 1024)) +
+                     " KB, 超过上限 " + N((long long)(kMaxInputBytes / 1024)) +
+                     " KB。正常的信道表格不会有这么大, 已拒绝读取。");
+            res.log = log.s;
+            res.tooLarge = true;
+            return res;
+        }
+
         Cells cells;
         if (!LoadSheet(backup, "Sheet1", cells, err)) {
             log.Line("读取 " + WToU8(BaseName(backup)) + " 失败: " + err);
@@ -629,14 +726,26 @@ Result Convert(const uint8_t* baseBlob, size_t baseLen, const Options& opt) {
             }
         }
 
-        std::vector<Channel> chans = ReadChannels(cells);
+        ReadOutcome rd = ReadChannels(cells, log);
+        const std::vector<Channel>& chans = rd.chans;
+        if (rd.skipped > 0) {
+            log.Line("");
+            log.Line("! 有 " + N(rd.skipped) + " 条信道填得不规范, 已跳过(不进行转换):");
+            for (size_t i = 0; i < rd.problems.size() && i < 30; ++i)
+                log.Line("   " + rd.problems[i]);
+            if (rd.problems.size() > 30)
+                log.Line("   … 另有 " + N((long long)rd.problems.size() - 30) + " 行同类提示");
+        }
         if (chans.empty()) {
-            log.Line("备份里没有读到任何信道 —— 表格可能是空白的, 或第 1 行不是表头。");
+            log.Line(rd.skipped > 0
+                         ? "备份里的信道全部填得不规范, 没有可转换的内容。"
+                         : "备份里没有读到任何信道 —— 表格可能是空白的, 或第 1 行不是表头。");
             res.log = log.s;
             return res;
         }
         log.Line("读取信道: " + N(chans.size()) + " 条, 信道号 " + N(chans.front().no) + ".." +
-                 N(chans.back().no));
+                 N(chans.back().no) +
+                 (rd.skipped > 0 ? ("   (另有 " + N(rd.skipped) + " 条不规范已跳过)") : ""));
 
         std::vector<Row> rows;
         if (!BuildRows(baseBlob, baseLen, rows, err)) {
@@ -725,7 +834,7 @@ Result Convert(const uint8_t* baseBlob, size_t baseLen, const Options& opt) {
         for (auto& kv : mapping) {
             int slot = kv.first;
             const Channel& ch = kv.second;
-            Plan plan = MakePlan(ch, log);
+            Plan plan = ToPlan(ch);
             std::string perr;
             bool ok = true;
             std::array<uint8_t, 16> payload = BuildPayload(ch, plan, ok, perr);

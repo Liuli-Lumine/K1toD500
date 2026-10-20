@@ -104,6 +104,16 @@ ReverseResult ConvertDatToK1(const uint8_t* xlsxTemplate, size_t tplLen,
     ReverseResult res;
     LogBuf log;
     try {
+        // 大小上限: 正常的 .dat 只有一百多 KB
+        unsigned long long fsz = 0;
+        if (FileSizeBytes(datPath, fsz) && fsz > kMaxInputBytes) {
+            log.Line("文件过大: " + WToU8(BaseName(datPath)) + " 有 " + N((long long)(fsz / 1024)) +
+                     " KB, 超过上限 " + N((long long)(kMaxInputBytes / 1024)) +
+                     " KB。D500 的 .dat 不会这么大, 已拒绝读取。");
+            res.log = log.s;
+            res.tooLarge = true;
+            return res;
+        }
         std::vector<uint8_t> bytes;
         if (!ReadAll(datPath, bytes)) {
             log.Line("读取失败: " + WToU8(datPath));

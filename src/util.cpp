@@ -211,6 +211,13 @@ bool DirExists(const std::wstring& path) {
     return a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY);
 }
 
+bool FileSizeBytes(const std::wstring& path, unsigned long long& size) {
+    WIN32_FILE_ATTRIBUTE_DATA fad;
+    if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &fad)) return false;
+    size = ((unsigned long long)fad.nFileSizeHigh << 32) | (unsigned long long)fad.nFileSizeLow;
+    return true;
+}
+
 std::wstring ExePath() {
     wchar_t buf[MAX_PATH * 4];
     DWORD n = GetModuleFileNameW(nullptr, buf, (DWORD)(sizeof(buf) / sizeof(buf[0])));
@@ -254,6 +261,22 @@ std::string TodayYymmdd() {
     return std::string(buf);
 }
 
+// FILETIME (UTC, 100ns) -> 本地 yy mm dd; 失败时退回今天, 不会产生空串
+std::string YymmddFromFileTime(unsigned long long ft) {
+    if (ft == 0) return TodayYymmdd();
+    FILETIME f;
+    f.dwLowDateTime = (DWORD)(ft & 0xFFFFFFFFull);
+    f.dwHighDateTime = (DWORD)(ft >> 32);
+    FILETIME local;
+    if (!FileTimeToLocalFileTime(&f, &local)) return TodayYymmdd();
+    SYSTEMTIME st;
+    if (!FileTimeToSystemTime(&local, &st)) return TodayYymmdd();
+    if (st.wYear < 1980 || st.wYear > 2200) return TodayYymmdd();
+    char buf[16];
+    std::snprintf(buf, sizeof(buf), "%02d%02d%02d", st.wYear % 100, st.wMonth, st.wDay);
+    return std::string(buf);
+}
+
 std::wstring UniqueSuffixedPath(const std::wstring& dir, const std::wstring& stem,
                                 const std::wstring& ext) {
     std::wstring p = Join(dir, stem + ext);
@@ -262,16 +285,4 @@ std::wstring UniqueSuffixedPath(const std::wstring& dir, const std::wstring& ste
     }
     return p;
 }
-std::wstring UniquePath(const std::wstring& dir, const std::wstring& stem,
-                        const std::wstring& ext) {
-    std::wstring p = Join(dir, stem + ext);
-    int n = 1;
-    while (FileExists(p)) {
-        wchar_t suffix[16];
-        std::swprintf(suffix, 16, L"_%d", n++);
-        p = Join(dir, stem + suffix + ext);
-    }
-    return p;
-}
-
 }  // namespace k1d500

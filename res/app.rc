@@ -15,8 +15,8 @@ IDR_BASE_BLOB RCDATA "../data/base.bin"
 IDR_BLANK_XLSX RCDATA "../data/K5Channel.xlsx"
 
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 1,0,0,0
- PRODUCTVERSION 1,0,0,0
+ FILEVERSION 1,1,0,0
+ PRODUCTVERSION 1,1,0,0
  FILEFLAGSMASK 0x3fL
  FILEFLAGS 0x0L
  FILEOS 0x40004L
@@ -28,11 +28,11 @@ BEGIN
         BLOCK "080404b0"
         BEGIN
             VALUE "FileDescription", "泉盛信道 → 即时通 D500 信道转换"
-            VALUE "FileVersion", "1.0.0.0"
+            VALUE "FileVersion", "1.1.0.0"
             VALUE "InternalName", "K1toD500"
             VALUE "OriginalFilename", "K1toD500.exe"
             VALUE "ProductName", "泉盛信道"
-            VALUE "ProductVersion", "1.0.0.0"
+            VALUE "ProductVersion", "1.1.0.0"
             VALUE "LegalCopyright", "free to use"
         END
     END
