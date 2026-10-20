@@ -4,8 +4,9 @@
 
 把 `https://k5.vicicode.com/#/chirp/base` 网站导出的信道表格（xlsx）转换成即时通 D500
 可导入的 `.dat`；也能反过来把 D500 的 `.dat` 转回信道表格（次要功能）。原
-`泉盛UV-K1信道转换到即时通D500.py` 的 **C++ 复刻版**（该 Python 脚本未包含在本仓库），
-带图形界面。
+`泉盛UV-K1信道转换到即时通D500.py` 的 **C++ 复刻版**，带图形界面。
+（原 Python 脚本也在 [v1.0.0 Release](https://github.com/Liuli-Lumine/K1toD500/releases/tag/v1.0.0)
+的附件里，同样由 AI 编写，仅供对照，日常使用请直接下 exe。）
 
 **单个 exe，零依赖**：不装 Python、不装任何运行库，不需要配置 PATH，双击就能用
 （静态链接 CRT，只依赖 Windows 自带的 6 个系统 DLL）。
@@ -223,8 +224,8 @@ K1toD500_cpp/
 
 - **代码、界面、资源、构建脚本、文档全部由 AI 生成**，开发环境是 **DeepSeek Harness**；
   人工只提出需求、在真机上测试并验收。
-- 转换规则来自原始 Python 脚本（`泉盛UV-K1信道转换到即时通D500.py`，仓库未包含）的逆向结论，
-  C++ 版逐字节对齐了它的输出。
+- 转换规则来自原始 Python 脚本（`k1_to_d500_reference.py`，同样由 AI 编写，
+  放在 v1.0.0 Release 附件里，仅供对照）的逆向结论，C++ 版逐字节对齐了它的输出。
 - 项目从 0 到 1（含 .xlsx 解析、DEFLATE 解压、ZIP 读写、Win32 界面）都没有引用第三方库。
 
 ## 许可证
