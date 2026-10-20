@@ -1,0 +1,43 @@
+// app.rc —— 资源: 清单 / 图标 / 内置数据 / 版本信息
+#pragma code_page(65001)
+
+#include "res_ids.h"
+
+// 1 = 资源 ID, 24 = RT_MANIFEST (用数字, 免得依赖 windows.h 里的符号)
+1 24 "app.manifest"
+
+IDI_APPICON ICON "app.ico"
+
+// 内置基准: 577 行 × 16 字节 (来自写频软件生成的、已知可用的 .dat)
+IDR_BASE_BLOB RCDATA "../data/base.bin"
+
+// 内置空白信道表格: 点【生成空白文件】时原样写出一份
+IDR_BLANK_XLSX RCDATA "../data/K5Channel.xlsx"
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION 1,0,0,0
+ PRODUCTVERSION 1,0,0,0
+ FILEFLAGSMASK 0x3fL
+ FILEFLAGS 0x0L
+ FILEOS 0x40004L
+ FILETYPE 0x1L
+ FILESUBTYPE 0x0L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "080404b0"
+        BEGIN
+            VALUE "FileDescription", "泉盛信道 → 即时通 D500 信道转换"
+            VALUE "FileVersion", "1.0.0.0"
+            VALUE "InternalName", "K1toD500"
+            VALUE "OriginalFilename", "K1toD500.exe"
+            VALUE "ProductName", "泉盛信道"
+            VALUE "ProductVersion", "1.0.0.0"
+            VALUE "LegalCopyright", "free to use"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x804, 1200
+    END
+END

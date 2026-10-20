@@ -1,0 +1,19 @@
+# 编译产物
+build/
+*.obj
+*.res
+*.pdb
+*.ilk
+*.exe
+!tools/
+
+# Python 缓存
+__pycache__/
+*.pyc
+
+# 编辑器 / 系统
+.vs/
+.vscode/
+*.user
+Thumbs.db
+desktop.ini
